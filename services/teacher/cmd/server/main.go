@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sky0621/go_work_sample/core/pkg/httpmw"
 	"github.com/sky0621/go_work_sample/core/pkg/memory"
+	"github.com/sky0621/go_work_sample/core/pkg/storage/filedb"
 	"github.com/sky0621/go_work_sample/core/pkg/usecase"
 	scoring "github.com/sky0621/go_work_sample/scoring/pkg/grading"
 	teacherhttp "github.com/sky0621/go_work_sample/teacher/internal/http"
@@ -19,7 +21,11 @@ import (
 func main() {
 	addr := envOrDefault("TEACHER_API_ADDR", ":8080")
 
-	repo := memory.NewRepository(memory.SampleSeed())
+	dataPath := envOrDefault("DATA_STORE_PATH", "./data/state.json")
+	repo, err := filedb.NewRepository(dataPath, memory.SampleSeed())
+	if err != nil {
+		log.Fatalf("failed to initialise repository: %v", err)
+	}
 	assessment := usecase.NewAssessmentService(repo, repo, repo, repo)
 	gradingSvc := scoring.NewService(assessment)
 
@@ -30,9 +36,12 @@ func main() {
 	})
 	teacherhttp.NewHandler(assessment, gradingSvc).Register(mux)
 
+	teacherKey := envOrDefault("TEACHER_API_KEY", "teacher-secret")
+	authMiddleware := httpmw.APIKey(httpmw.APIKeyConfig{Key: teacherKey, Prefix: "Bearer "})
+
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           logMiddleware(mux),
+		Handler:           logMiddleware(authMiddleware(mux)),
 		ReadTimeout:       5 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,

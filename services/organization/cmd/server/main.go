@@ -10,14 +10,21 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sky0621/go_work_sample/core/pkg/httpmw"
 	corememory "github.com/sky0621/go_work_sample/core/pkg/memory"
+	"github.com/sky0621/go_work_sample/core/pkg/storage/filedb"
 	orghttp "github.com/sky0621/go_work_sample/organization/internal/http"
 )
 
 func main() {
 	addr := envOrDefault("ORGANIZATION_API_ADDR", ":8090")
 
-	repo := corememory.NewRepository(corememory.SampleSeed())
+	dataPath := envOrDefault("DATA_STORE_PATH", "./data/state.json")
+	repo, err := filedb.NewRepository(dataPath, corememory.SampleSeed())
+	if err != nil {
+		log.Fatalf("failed to initialise repository: %v", err)
+	}
+
 	handler := orghttp.NewHandler(repo)
 
 	mux := http.NewServeMux()
@@ -27,9 +34,12 @@ func main() {
 	})
 	handler.Register(mux)
 
+	adminKey := envOrDefault("ADMIN_API_KEY", "admin-secret")
+	authMiddleware := httpmw.APIKey(httpmw.APIKeyConfig{Key: adminKey, Prefix: "Bearer "})
+
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           logMiddleware(mux),
+		Handler:           logMiddleware(authMiddleware(mux)),
 		ReadTimeout:       5 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,

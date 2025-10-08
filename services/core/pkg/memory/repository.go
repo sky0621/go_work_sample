@@ -41,9 +41,36 @@ type Repository struct {
 	resultByAnswer map[domain.AnswerID]domain.ResultID
 }
 
+// State represents a serialisable snapshot of the repository.
+type State struct {
+	Schools     []domain.School               `json:"schools"`
+	Grades      []domain.Grade                `json:"grades"`
+	Classes     []domain.Class                `json:"classes"`
+	Teachers    []domain.Teacher              `json:"teachers"`
+	Students    []domain.Student              `json:"students"`
+	Tests       []domain.Test                 `json:"tests"`
+	Questions   []domain.Question             `json:"questions"`
+	Assignments map[string][]domain.StudentID `json:"assignments"`
+	Answers     []domain.Answer               `json:"answers"`
+	Results     []domain.Result               `json:"results"`
+}
+
 // NewRepository creates a repository loaded with the provided seed.
 func NewRepository(seed SeedData) *Repository {
-	repo := &Repository{
+	repo := newRepository()
+	repo.applySeed(seed)
+	return repo
+}
+
+// NewRepositoryFromState returns a repository pre-populated with the provided state.
+func NewRepositoryFromState(state State) *Repository {
+	repo := newRepository()
+	repo.applyState(state)
+	return repo
+}
+
+func newRepository() *Repository {
+	return &Repository{
 		schools:        make(map[domain.SchoolID]domain.School),
 		grades:         make(map[domain.GradeID]domain.Grade),
 		classes:        make(map[domain.ClassID]domain.Class),
@@ -60,24 +87,6 @@ func NewRepository(seed SeedData) *Repository {
 		results:        make(map[domain.ResultID]domain.Result),
 		resultByAnswer: make(map[domain.AnswerID]domain.ResultID),
 	}
-
-	for _, s := range seed.Schools {
-		repo.schools[s.ID] = cloneSchool(s)
-	}
-	for _, g := range seed.Grades {
-		repo.grades[g.ID] = cloneGrade(g)
-	}
-	for _, c := range seed.Classes {
-		repo.classes[c.ID] = cloneClass(c)
-	}
-	for _, t := range seed.Teachers {
-		repo.teachers[t.ID] = cloneTeacher(t)
-	}
-	for _, st := range seed.Students {
-		repo.students[st.ID] = cloneStudent(st)
-	}
-
-	return repo
 }
 
 var _ repository.OrganizationRepository = (*Repository)(nil)
@@ -567,6 +576,183 @@ func cloneTest(in domain.Test) domain.Test {
 func cloneQuestion(in domain.Question) domain.Question { return in }
 func cloneAnswer(in domain.Answer) domain.Answer       { return in }
 func cloneResult(in domain.Result) domain.Result       { return in }
+
+// ExportState renders a snapshot suitable for persistence.
+func (r *Repository) ExportState() State {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	state := State{
+		Schools:     make([]domain.School, 0, len(r.schools)),
+		Grades:      make([]domain.Grade, 0, len(r.grades)),
+		Classes:     make([]domain.Class, 0, len(r.classes)),
+		Teachers:    make([]domain.Teacher, 0, len(r.teachers)),
+		Students:    make([]domain.Student, 0, len(r.students)),
+		Tests:       make([]domain.Test, 0, len(r.tests)),
+		Questions:   make([]domain.Question, 0, len(r.questions)),
+		Assignments: make(map[string][]domain.StudentID, len(r.assignments)),
+		Answers:     make([]domain.Answer, 0, len(r.answers)),
+		Results:     make([]domain.Result, 0, len(r.results)),
+	}
+
+	for _, s := range r.schools {
+		state.Schools = append(state.Schools, cloneSchool(s))
+	}
+	sort.Slice(state.Schools, func(i, j int) bool {
+		return state.Schools[i].CreatedAt.Before(state.Schools[j].CreatedAt)
+	})
+
+	for _, g := range r.grades {
+		state.Grades = append(state.Grades, cloneGrade(g))
+	}
+	sort.Slice(state.Grades, func(i, j int) bool {
+		return state.Grades[i].CreatedAt.Before(state.Grades[j].CreatedAt)
+	})
+
+	for _, c := range r.classes {
+		state.Classes = append(state.Classes, cloneClass(c))
+	}
+	sort.Slice(state.Classes, func(i, j int) bool {
+		return state.Classes[i].CreatedAt.Before(state.Classes[j].CreatedAt)
+	})
+
+	for _, t := range r.teachers {
+		state.Teachers = append(state.Teachers, cloneTeacher(t))
+	}
+	sort.Slice(state.Teachers, func(i, j int) bool {
+		return state.Teachers[i].CreatedAt.Before(state.Teachers[j].CreatedAt)
+	})
+
+	for _, st := range r.students {
+		state.Students = append(state.Students, cloneStudent(st))
+	}
+	sort.Slice(state.Students, func(i, j int) bool {
+		return state.Students[i].CreatedAt.Before(state.Students[j].CreatedAt)
+	})
+
+	for _, test := range r.tests {
+		state.Tests = append(state.Tests, cloneTest(test))
+	}
+	sort.Slice(state.Tests, func(i, j int) bool {
+		return state.Tests[i].CreatedAt.Before(state.Tests[j].CreatedAt)
+	})
+
+	for _, q := range r.questions {
+		state.Questions = append(state.Questions, cloneQuestion(q))
+	}
+	sort.Slice(state.Questions, func(i, j int) bool {
+		if state.Questions[i].TestID == state.Questions[j].TestID {
+			return state.Questions[i].Sequence < state.Questions[j].Sequence
+		}
+		return state.Questions[i].CreatedAt.Before(state.Questions[j].CreatedAt)
+	})
+
+	for testID, students := range r.assignments {
+		list := make([]domain.StudentID, 0, len(students))
+		for sid := range students {
+			list = append(list, sid)
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i] < list[j] })
+		state.Assignments[string(testID)] = list
+	}
+
+	for _, ans := range r.answers {
+		state.Answers = append(state.Answers, cloneAnswer(ans))
+	}
+	sort.Slice(state.Answers, func(i, j int) bool {
+		return state.Answers[i].CreatedAt.Before(state.Answers[j].CreatedAt)
+	})
+
+	for _, res := range r.results {
+		state.Results = append(state.Results, cloneResult(res))
+	}
+	sort.Slice(state.Results, func(i, j int) bool {
+		return state.Results[i].CreatedAt.Before(state.Results[j].CreatedAt)
+	})
+
+	return state
+}
+
+func (r *Repository) applySeed(seed SeedData) {
+	for _, s := range seed.Schools {
+		r.schools[s.ID] = cloneSchool(s)
+	}
+	for _, g := range seed.Grades {
+		r.grades[g.ID] = cloneGrade(g)
+	}
+	for _, c := range seed.Classes {
+		r.classes[c.ID] = cloneClass(c)
+	}
+	for _, t := range seed.Teachers {
+		r.teachers[t.ID] = cloneTeacher(t)
+	}
+	for _, st := range seed.Students {
+		r.students[st.ID] = cloneStudent(st)
+	}
+}
+
+func (r *Repository) applyState(state State) {
+	for _, s := range state.Schools {
+		r.schools[s.ID] = cloneSchool(s)
+	}
+	for _, g := range state.Grades {
+		r.grades[g.ID] = cloneGrade(g)
+	}
+	for _, c := range state.Classes {
+		r.classes[c.ID] = cloneClass(c)
+	}
+	for _, t := range state.Teachers {
+		r.teachers[t.ID] = cloneTeacher(t)
+	}
+	for _, st := range state.Students {
+		r.students[st.ID] = cloneStudent(st)
+	}
+
+	for _, test := range state.Tests {
+		clone := cloneTest(test)
+		if assigned, ok := state.Assignments[string(clone.ID)]; ok {
+			clone.AssignedTo = append([]domain.StudentID(nil), assigned...)
+		}
+		r.tests[clone.ID] = clone
+	}
+
+	for _, question := range state.Questions {
+		clone := cloneQuestion(question)
+		r.questions[clone.ID] = clone
+		r.testQuestions[clone.TestID] = append(r.testQuestions[clone.TestID], clone.ID)
+	}
+
+	for testID, students := range state.Assignments {
+		tid := domain.TestID(testID)
+		if _, ok := r.assignments[tid]; !ok {
+			r.assignments[tid] = make(map[domain.StudentID]struct{})
+		}
+		for _, sid := range students {
+			r.assignments[tid][sid] = struct{}{}
+			if _, ok := r.studentTests[sid]; !ok {
+				r.studentTests[sid] = make(map[domain.TestID]struct{})
+			}
+			r.studentTests[sid][tid] = struct{}{}
+		}
+	}
+
+	for _, ans := range state.Answers {
+		clone := cloneAnswer(ans)
+		r.answers[clone.ID] = clone
+		key := answerKey(clone.TestID, clone.QuestionID, clone.StudentID)
+		r.answerIndex[key] = clone.ID
+		if _, ok := r.answersByTest[clone.TestID]; !ok {
+			r.answersByTest[clone.TestID] = make(map[domain.AnswerID]struct{})
+		}
+		r.answersByTest[clone.TestID][clone.ID] = struct{}{}
+	}
+
+	for _, res := range state.Results {
+		clone := cloneResult(res)
+		r.results[clone.ID] = clone
+		r.resultByAnswer[clone.AnswerID] = clone.ID
+	}
+}
 
 // SampleSeed provides deterministic data for demos.
 func SampleSeed() SeedData {
